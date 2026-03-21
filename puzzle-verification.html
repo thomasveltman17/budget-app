@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Slider Puzzle Verification</title>
+  <style>
+    body {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      margin: 0;
+      background: #f0f4f8;
+      font-family: Arial, sans-serif;
+    }
+
+    .modal {
+      background: white;
+      border-radius: 12px;
+      padding: 20px;
+      width: 380px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+    }
+
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    .modal-header span {
+      font-size: 13px;
+      color: #888;
+    }
+
+    .close-btn {
+      background: none;
+      border: 1px solid #ccc;
+      border-radius: 50%;
+      width: 24px;
+      height: 24px;
+      cursor: pointer;
+      font-size: 14px;
+      color: #666;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    h3 {
+      margin: 0 0 12px;
+      font-size: 16px;
+      color: #222;
+    }
+
+    /* Puzzle canvas area */
+    .puzzle-area {
+      position: relative;
+      width: 100%;
+      height: 180px;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #ddd;
+      margin-bottom: 14px;
+      user-select: none;
+    }
+
+    .puzzle-area img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    /* The hole (cutout) in the image */
+    .puzzle-hole {
+      position: absolute;
+      width: 52px;
+      height: 52px;
+      background: rgba(0,0,0,0.35);
+      border: 2px dashed rgba(255,255,255,0.6);
+      border-radius: 4px;
+      top: 50%;
+      transform: translateY(-50%);
+      pointer-events: none;
+    }
+
+    /* The draggable piece */
+    .puzzle-piece {
+      position: absolute;
+      width: 52px;
+      height: 52px;
+      border-radius: 4px;
+      top: 50%;
+      transform: translateY(-50%);
+      border: 2px solid rgba(255,255,255,0.8);
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+      overflow: hidden;
+      pointer-events: none;
+      transition: border-color 0.2s;
+    }
+
+    .puzzle-piece img {
+      position: absolute;
+      /* Will be set by JS to show the correct slice */
+    }
+
+    .puzzle-piece.success {
+      border-color: #4caf50;
+      box-shadow: 0 0 0 3px rgba(76,175,80,0.4);
+    }
+
+    /* Slider track */
+    .slider-track {
+      position: relative;
+      width: 100%;
+      height: 44px;
+      background: #e8e8e8;
+      border-radius: 22px;
+      margin-bottom: 14px;
+    }
+
+    .slider-fill {
+      position: absolute;
+      left: 0;
+      top: 0;
+      height: 100%;
+      background: linear-gradient(90deg, #4a90e2, #357abd);
+      border-radius: 22px;
+      width: 44px;
+      transition: background 0.3s;
+      pointer-events: none;
+    }
+
+    .slider-fill.success {
+      background: linear-gradient(90deg, #43a047, #2e7d32);
+    }
+
+    .slider-handle {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 44px;
+      height: 44px;
+      background: white;
+      border-radius: 50%;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+      cursor: grab;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      color: #4a90e2;
+      z-index: 10;
+      transition: color 0.3s, box-shadow 0.2s;
+    }
+
+    .slider-handle:active {
+      cursor: grabbing;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+    }
+
+    .slider-handle.success {
+      color: #43a047;
+    }
+
+    .slider-label {
+      position: absolute;
+      width: 100%;
+      text-align: center;
+      line-height: 44px;
+      font-size: 13px;
+      color: #999;
+      pointer-events: none;
+      transition: opacity 0.3s;
+    }
+
+    /* Footer */
+    .modal-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .footer-left {
+      display: flex;
+      gap: 12px;
+    }
+
+    .icon-btn {
+      background: none;
+      border: none;
+      font-size: 18px;
+      cursor: pointer;
+      color: #888;
+      padding: 4px;
+    }
+
+    .icon-btn:hover {
+      color: #444;
+    }
+
+    .branding {
+      font-size: 11px;
+      color: #bbb;
+    }
+
+    .success-message {
+      text-align: center;
+      color: #2e7d32;
+      font-weight: bold;
+      font-size: 14px;
+      opacity: 0;
+      transition: opacity 0.3s;
+      height: 20px;
+      margin-bottom: 4px;
+    }
+
+    .success-message.show {
+      opacity: 1;
+    }
+  </style>
+</head>
+<body>
+
+<div class="modal">
+  <div class="modal-header">
+    <span>Verification</span>
+    <button class="close-btn" onclick="resetPuzzle()">✕</button>
+  </div>
+  <h3>Slide to complete the puzzle</h3>
+
+  <div class="puzzle-area" id="puzzleArea">
+    <!-- Background image with hole -->
+    <img id="bgImage" src="https://picsum.photos/seed/puzzle/400/180" alt="puzzle background" draggable="false">
+    <div class="puzzle-hole" id="puzzleHole"></div>
+    <!-- Sliding piece -->
+    <div class="puzzle-piece" id="puzzlePiece">
+      <img id="pieceImage" src="https://picsum.photos/seed/puzzle/400/180" alt="" draggable="false">
+    </div>
+  </div>
+
+  <div class="success-message" id="successMsg">Verification successful!</div>
+
+  <div class="slider-track" id="sliderTrack">
+    <div class="slider-fill" id="sliderFill"></div>
+    <div class="slider-label" id="sliderLabel">Slide the piece into place</div>
+    <div class="slider-handle" id="sliderHandle">|||</div>
+  </div>
+
+  <div class="modal-footer">
+    <div class="footer-left">
+      <button class="icon-btn" title="Help">?</button>
+      <button class="icon-btn" title="Refresh" onclick="resetPuzzle()">↻</button>
+    </div>
+    <span class="branding">Puzzle CAPTCHA</span>
+  </div>
+</div>
+
+<script>
+  // --- Config ---
+  const PIECE_SIZE = 52;
+  const TOLERANCE = 12; // px tolerance for "correct" placement
+  const TRACK_PADDING = 44; // handle width
+
+  // --- State ---
+  let isDragging = false;
+  let startX = 0;
+  let handleX = 0;
+  let targetX = 0; // where the hole is
+  let puzzleAreaWidth = 0;
+  let maxSlide = 0;
+  let solved = false;
+
+  // --- Elements ---
+  const handle = document.getElementById('sliderHandle');
+  const fill = document.getElementById('sliderFill');
+  const label = document.getElementById('sliderLabel');
+  const piece = document.getElementById('puzzlePiece');
+  const hole = document.getElementById('puzzleHole');
+  const area = document.getElementById('puzzleArea');
+  const pieceImg = document.getElementById('pieceImage');
+  const successMsg = document.getElementById('successMsg');
+
+  function initPuzzle() {
+    solved = false;
+    puzzleAreaWidth = area.offsetWidth;
+    maxSlide = puzzleAreaWidth - TRACK_PADDING;
+
+    // Place the hole at a random x (right half of image)
+    const minHoleX = Math.floor(puzzleAreaWidth * 0.45);
+    const maxHoleX = puzzleAreaWidth - PIECE_SIZE - 10;
+    targetX = Math.floor(Math.random() * (maxHoleX - minHoleX) + minHoleX);
+
+    const holeTop = (area.offsetHeight - PIECE_SIZE) / 2;
+    hole.style.left = targetX + 'px';
+
+    // Set piece image to match background slice
+    pieceImg.style.width = puzzleAreaWidth + 'px';
+    pieceImg.style.height = area.offsetHeight + 'px';
+    pieceImg.style.left = -targetX + 'px';
+    pieceImg.style.top = 0;
+
+    // Reset piece position to left
+    piece.style.left = '0px';
+
+    // Reset handle
+    handleX = 0;
+    handle.style.left = '0px';
+    fill.style.width = TRACK_PADDING + 'px';
+
+    // Reset classes
+    handle.classList.remove('success');
+    fill.classList.remove('success');
+    piece.classList.remove('success');
+    label.style.opacity = '1';
+    successMsg.classList.remove('show');
+  }
+
+  // Drag events on handle
+  handle.addEventListener('mousedown', startDrag);
+  handle.addEventListener('touchstart', startDrag, { passive: true });
+
+  function startDrag(e) {
+    if (solved) return;
+    isDragging = true;
+    startX = (e.touches ? e.touches[0].clientX : e.clientX) - handleX;
+    e.preventDefault && e.preventDefault();
+  }
+
+  document.addEventListener('mousemove', onDrag);
+  document.addEventListener('touchmove', onDrag, { passive: false });
+
+  function onDrag(e) {
+    if (!isDragging) return;
+    e.preventDefault && e.preventDefault();
+
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    let newX = clientX - startX;
+    newX = Math.max(0, Math.min(newX, maxSlide));
+    handleX = newX;
+
+    // Move handle and fill
+    handle.style.left = newX + 'px';
+    fill.style.width = (newX + TRACK_PADDING) + 'px';
+
+    // Move puzzle piece proportionally
+    const pieceX = (newX / maxSlide) * (puzzleAreaWidth - PIECE_SIZE);
+    piece.style.left = pieceX + 'px';
+  }
+
+  document.addEventListener('mouseup', endDrag);
+  document.addEventListener('touchend', endDrag);
+
+  function endDrag() {
+    if (!isDragging) return;
+    isDragging = false;
+
+    // Check if piece aligns with hole
+    const pieceX = (handleX / maxSlide) * (puzzleAreaWidth - PIECE_SIZE);
+    const diff = Math.abs(pieceX - targetX);
+
+    if (diff <= TOLERANCE) {
+      // Success!
+      solved = true;
+      piece.style.left = targetX + 'px';
+      handle.classList.add('success');
+      fill.classList.add('success');
+      piece.classList.add('success');
+      label.style.opacity = '0';
+      successMsg.classList.add('show');
+      // Snap handle to correct position too
+      const snapHandleX = (targetX / (puzzleAreaWidth - PIECE_SIZE)) * maxSlide;
+      handle.style.left = snapHandleX + 'px';
+      fill.style.width = (snapHandleX + TRACK_PADDING) + 'px';
+    } else {
+      // Fail — slide back
+      animateBack();
+    }
+  }
+
+  function animateBack() {
+    const startVal = handleX;
+    const duration = 300;
+    const start = performance.now();
+
+    function step(now) {
+      const t = Math.min((now - start) / duration, 1);
+      const ease = 1 - Math.pow(1 - t, 3); // ease out cubic
+      const val = startVal * (1 - ease);
+
+      handle.style.left = val + 'px';
+      fill.style.width = (val + TRACK_PADDING) + 'px';
+      const pieceX = (val / maxSlide) * (puzzleAreaWidth - PIECE_SIZE);
+      piece.style.left = pieceX + 'px';
+
+      if (t < 1) requestAnimationFrame(step);
+      else handleX = 0;
+    }
+    requestAnimationFrame(step);
+  }
+
+  function resetPuzzle() {
+    initPuzzle();
+  }
+
+  // Init on load
+  window.addEventListener('load', initPuzzle);
+  window.addEventListener('resize', initPuzzle);
+</script>
+
+</body>
+</html>
