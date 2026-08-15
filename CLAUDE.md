@@ -78,12 +78,26 @@ Single-user app (one account, secured behind login). No multi-tenancy.
 ### Transaction
 - `account_id` (FK)
 - `category_id` (FK, nullable)
-- `amount` (int, cents)
+- `trip_id` (FK, nullable — groups spending into a trip)
+- `amount` (int, cents — what moved through the account)
+- `share_amount` (int, cents, nullable — your share of a shared expense; null = all yours)
 - `type` (enum: income, expense)
 - `description` (string)
 - `date` (date)
 - `is_reviewed` (boolean, default false — for CSV import review flow)
+- `is_settlement` (boolean, default false — a Tricount/WieBetaaltWat settlement transfer)
 - `notes` (text, nullable)
+- Soft deletes
+
+### Trip
+- `name` (string), `destination` (string, nullable)
+- `start_date` / `end_date` (date)
+- `budget_amount` (int, cents, nullable — planned spend)
+- `participants` (int, default 1 — including you, drives "split evenly")
+- `status` (enum: planned, active, settling, settled)
+- `counts_toward_budget` (boolean, default true — false ring-fences it from monthly budgets)
+- `savings_goal_id` (FK, nullable)
+- `color` (string, hex), `icon` (string), `notes` (text, nullable)
 - Soft deletes
 
 ### Budget
@@ -115,6 +129,7 @@ Single-user app (one account, secured behind login). No multi-tenancy.
 - [ ] Budget alert notifications (80% and 100%)
 - [ ] Monthly summary email
 - [ ] Savings goals tracking
+- [x] Trip expense tracking (shared-expense splitting, settlement reconciliation)
 
 ---
 
@@ -124,6 +139,7 @@ Single-user app (one account, secured behind login). No multi-tenancy.
 3. `TransactionResource` (with bulk review action for imports)
 4. `BudgetResource`
 5. `SavingsGoalResource`
+6. `TripResource` (with trip overview page and transactions relation manager)
 
 ## Filament Widgets (Dashboard)
 1. `NetWorthWidget` — StatsOverview showing total across all accounts
@@ -143,6 +159,14 @@ Single-user app (one account, secured behind login). No multi-tenancy.
 - `App\Services\BudgetAlertService` — checks budget usage and fires notifications
 - `App\Services\CsvImportService` — parses bank CSV exports into transactions
 - `App\Services\OnboardingService` — handles preset category bundles and budget suggestions
+- `App\Services\TripService` — trip totals: out-of-pocket vs. your share, outstanding balance, breakdowns
+
+### Shared trip expenses
+When you front a group expense, `amount` is what left your account and `share_amount`
+is what you personally consumed. Budgets, category breakdowns and trip totals all use
+`COALESCE(share_amount, amount)`. Settlement transfers (`is_settlement`) count toward
+what you are out of pocket but never toward category spending, so the gap between the
+two totals is what the group still owes you — zero once the Tricount is settled.
 
 ---
 
