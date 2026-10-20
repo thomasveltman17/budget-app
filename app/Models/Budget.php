@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Query\JoinClause;
 
 class Budget extends Model
 {
@@ -22,7 +23,7 @@ class Budget extends Model
     {
         return [
             'percentage' => 'integer',
-            'is_active'  => 'boolean',
+            'is_active' => 'boolean',
         ];
     }
 
@@ -52,16 +53,32 @@ class Budget extends Model
 
     /**
      * Sum of all expense transactions in the given period for this budget's categories.
+     *
+     * Shared expenses count for your share only, so fronting a €120 dinner for
+     * four costs this budget €30. Settlement transfers move money without
+     * consuming anything, and trips flagged as not counting toward budgets are
+     * left out entirely.
      */
     public function spentInPeriod(Carbon $periodStart, Carbon $periodEnd): int
     {
         return (int) Transaction::query()
             ->join('categories', 'transactions.category_id', '=', 'categories.id')
+            ->leftJoin('trips', function (JoinClause $join): void {
+                $join->on('transactions.trip_id', '=', 'trips.id')
+                    ->whereNull('trips.deleted_at');
+            })
             ->where('categories.budget_id', $this->id)
             ->where('transactions.type', 'expense')
-            ->whereBetween('transactions.date', [$periodStart->toDateString(), $periodEnd->toDateString()])
+            ->where('transactions.is_settlement', false)
+            ->whereDate('transactions.date', '>=', $periodStart->toDateString())
+            ->whereDate('transactions.date', '<=', $periodEnd->toDateString())
             ->whereNull('transactions.deleted_at')
             ->whereNull('categories.deleted_at')
-            ->sum('transactions.amount');
+            ->where(function (Builder $query): void {
+                $query->whereNull('trips.id')
+                    ->orWhere('trips.counts_toward_budget', true);
+            })
+            ->selectRaw('COALESCE(SUM(COALESCE(transactions.share_amount, transactions.amount)), 0) AS total')
+            ->value('total');
     }
 }

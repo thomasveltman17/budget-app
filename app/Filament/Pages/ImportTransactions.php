@@ -6,7 +6,9 @@ use App\Filament\Resources\TransactionResource;
 use App\Jobs\AiCategorizeTransactionsJob;
 use App\Models\Account;
 use App\Models\Transaction;
+use App\Models\Trip;
 use App\Services\CsvImportService;
+use App\Services\TripService;
 use Filament\Actions\Action;
 use Filament\Forms\Components\Checkbox;
 use Filament\Forms\Components\FileUpload;
@@ -57,6 +59,13 @@ class ImportTransactions extends Page
                     ->label('Use AI categorization')
                     ->helperText('Applies keyword rules first; AI runs only on transactions that remain uncategorized after that.')
                     ->default(false),
+
+                Select::make('trip_id')
+                    ->label('Assign to trip')
+                    ->options(fn () => Trip::orderByDesc('start_date')->pluck('name', 'id'))
+                    ->nullable()
+                    ->searchable()
+                    ->helperText('Optional — imported transactions dated inside the trip go straight onto it.'),
             ]);
     }
 
@@ -64,15 +73,22 @@ class ImportTransactions extends Page
     {
         $data = $this->form->getState();
 
-        $storedPath    = $data['csv_file'];
-        $fullPath      = Storage::disk('local')->path($storedPath);
-        $accountId     = (int) $data['account_id'];
-        $useAi         = (bool) ($data['use_ai_categorization'] ?? false);
+        $storedPath = $data['csv_file'];
+        $fullPath = Storage::disk('local')->path($storedPath);
+        $accountId = (int) $data['account_id'];
+        $useAi = (bool) ($data['use_ai_categorization'] ?? false);
         $importStarted = now();
 
         $result = app(CsvImportService::class)->import($fullPath, $accountId);
 
         Storage::disk('local')->delete($storedPath);
+
+        $tripAssigned = 0;
+
+        if (filled($data['trip_id'] ?? null)) {
+            $trip = Trip::findOrFail((int) $data['trip_id']);
+            $tripAssigned = app(TripService::class)->autoAssignByDateRange($trip);
+        }
 
         // Dispatch AI categorization as a background job so the user is not blocked.
         if ($useAi && $result['imported'] > 0) {
@@ -88,20 +104,24 @@ class ImportTransactions extends Page
             }
         }
 
-        $reviewUrl = TransactionResource::getUrl('index') . '?' .
+        $reviewUrl = TransactionResource::getUrl('index').'?'.
             http_build_query(['tableFilters' => ['is_reviewed' => ['value' => false]]]);
 
         $lines = [];
-        $lines[] = $result['imported'] . ' transaction' . ($result['imported'] === 1 ? '' : 's') . ' imported.';
+        $lines[] = $result['imported'].' transaction'.($result['imported'] === 1 ? '' : 's').' imported.';
 
         if ($result['duplicates'] > 0) {
-            $lines[] = $result['duplicates'] . ' duplicate' . ($result['duplicates'] === 1 ? '' : 's') . ' skipped.';
+            $lines[] = $result['duplicates'].' duplicate'.($result['duplicates'] === 1 ? '' : 's').' skipped.';
         }
 
         if ($result['skipped'] > 0 && $result['imported'] === 0) {
-            $lines[] = $result['skipped'] . ' row' . ($result['skipped'] === 1 ? '' : 's') . ' skipped — unsupported format.';
+            $lines[] = $result['skipped'].' row'.($result['skipped'] === 1 ? '' : 's').' skipped — unsupported format.';
         } elseif ($result['skipped'] > 0) {
-            $lines[] = $result['skipped'] . ' row' . ($result['skipped'] === 1 ? '' : 's') . ' skipped (invalid data).';
+            $lines[] = $result['skipped'].' row'.($result['skipped'] === 1 ? '' : 's').' skipped (invalid data).';
+        }
+
+        if ($tripAssigned > 0) {
+            $lines[] = $tripAssigned.' transaction'.($tripAssigned === 1 ? '' : 's').' assigned to '.$trip->name.'.';
         }
 
         if ($useAi && $result['imported'] > 0) {

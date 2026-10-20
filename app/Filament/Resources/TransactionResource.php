@@ -7,9 +7,11 @@ use App\Jobs\AiCategorizeTransactionsJob;
 use App\Models\Account;
 use App\Models\Category;
 use App\Models\Transaction;
+use App\Models\Trip;
+use App\Services\CategoryRuleService;
+use App\Services\TripService;
 use Filament\Actions;
 use Filament\Actions\BulkAction;
-use Filament\Tables\Grouping\Group;
 use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
@@ -17,8 +19,8 @@ use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Notifications\Notification;
 use Filament\Resources\Resource;
-use Filament\Schemas\Schema;
 use Filament\Schemas\Components\Utilities\Get;
+use Filament\Schemas\Schema;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\SelectColumn;
 use Filament\Tables\Columns\TextColumn;
@@ -26,6 +28,7 @@ use Filament\Tables\Columns\ToggleColumn;
 use Filament\Tables\Filters\Filter;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Filters\TernaryFilter;
+use Filament\Tables\Grouping\Group;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
@@ -44,7 +47,7 @@ class TransactionResource extends Resource
 
     public static function getEloquentQuery(): Builder
     {
-        return parent::getEloquentQuery()->with(['account', 'category.parent']);
+        return parent::getEloquentQuery()->with(['account', 'category.parent', 'trip']);
     }
 
     public static function form(Schema $schema): Schema
@@ -57,6 +60,7 @@ class TransactionResource extends Resource
                         ? $parent->children->pluck('name', 'id')->toArray()
                         : [$parent->id => $parent->name];
                 });
+
             return $grouped;
         };
 
@@ -67,7 +71,7 @@ class TransactionResource extends Resource
 
             Select::make('type')
                 ->options([
-                    'income'  => 'Income',
+                    'income' => 'Income',
                     'expense' => 'Expense',
                 ])
                 ->required(),
@@ -93,12 +97,45 @@ class TransactionResource extends Resource
                 ->numeric()
                 ->step(0.01)
                 ->required()
+                ->helperText('What actually left your account. Use 0 when someone else paid for you.')
                 ->afterStateHydrated(
                     fn (TextInput $component, $state) => $component->state($state / 100)
                 )
                 ->dehydrateStateUsing(
                     fn ($state) => (int) round((float) $state * 100)
                 ),
+
+            Select::make('trip_id')
+                ->label('Trip')
+                ->options(fn () => Trip::orderByDesc('start_date')->pluck('name', 'id'))
+                ->nullable()
+                ->searchable()
+                ->live()
+                ->helperText('Group this transaction into a trip to see what the trip really cost you.'),
+
+            TextInput::make('share_amount')
+                ->label('Your share')
+                ->prefix('€')
+                ->numeric()
+                ->step(0.01)
+                ->nullable()
+                ->visible(fn (Get $get): bool => filled($get('trip_id')) && ! $get('is_settlement'))
+                ->helperText('Leave empty when the whole amount is yours. Fronted a €120 dinner for four? Put 30 here.')
+                ->afterStateHydrated(
+                    fn (TextInput $component, $state) => $component->state(
+                        $state === null ? null : $state / 100
+                    )
+                )
+                ->dehydrateStateUsing(
+                    fn ($state) => filled($state) ? (int) round((float) $state * 100) : null
+                ),
+
+            Toggle::make('is_settlement')
+                ->label('Settlement transfer')
+                ->default(false)
+                ->live()
+                ->visible(fn (Get $get): bool => filled($get('trip_id')))
+                ->helperText('The Tricount payout. Counts toward what you are out of pocket, never toward category spending.'),
 
             Textarea::make('notes')
                 ->nullable()
@@ -119,6 +156,7 @@ class TransactionResource extends Resource
                         ? $parent->children->pluck('name', 'id')->toArray()
                         : [$parent->id => $parent->name];
                 });
+
             return $grouped;
         };
 
@@ -151,12 +189,13 @@ class TransactionResource extends Resource
                             ->each(function (Category $parent) use (&$options): void {
                                 if ($parent->children->isNotEmpty()) {
                                     foreach ($parent->children->sortBy('name') as $child) {
-                                        $options[$child->id] = $parent->name . ' › ' . $child->name;
+                                        $options[$child->id] = $parent->name.' › '.$child->name;
                                     }
                                 } else {
                                     $options[$parent->id] = $parent->name;
                                 }
                             });
+
                         return $options;
                     })
                     ->searchable()
@@ -165,22 +204,36 @@ class TransactionResource extends Resource
                 TextColumn::make('account.name')
                     ->label('Account'),
 
+                TextColumn::make('trip.name')
+                    ->label('Trip')
+                    ->badge()
+                    ->color('warning')
+                    ->placeholder('—')
+                    ->description(fn (Transaction $record): ?string => match (true) {
+                        $record->trip_id === null => null,
+                        $record->is_settlement => 'settlement',
+                        $record->frontedAmount() > 0 => 'your share €'.number_format($record->ownShare() / 100, 2, '.', ','),
+                        $record->frontedAmount() < 0 => 'paid by someone else',
+                        default => null,
+                    })
+                    ->toggleable(),
+
                 TextColumn::make('type')
                     ->badge()
                     ->color(fn ($state): string => match ($state->value) {
-                        'income'  => 'success',
+                        'income' => 'success',
                         'expense' => 'danger',
-                        default   => 'gray',
+                        default => 'gray',
                     }),
 
                 TextColumn::make('amount')
                     ->formatStateUsing(
-                        fn (int $state): string => '€' . number_format($state / 100, 2, '.', ',')
+                        fn (int $state): string => '€'.number_format($state / 100, 2, '.', ',')
                     )
                     ->color(fn (Transaction $record): string => match ($record->type->value) {
-                        'income'  => 'success',
+                        'income' => 'success',
                         'expense' => 'danger',
-                        default   => 'gray',
+                        default => 'gray',
                     })
                     ->sortable(),
 
@@ -198,7 +251,7 @@ class TransactionResource extends Resource
             ->filters([
                 SelectFilter::make('type')
                     ->options([
-                        'income'  => 'Income',
+                        'income' => 'Income',
                         'expense' => 'Expense',
                     ]),
 
@@ -209,6 +262,10 @@ class TransactionResource extends Resource
                 SelectFilter::make('category_id')
                     ->label('Category')
                     ->relationship('category', 'name'),
+
+                SelectFilter::make('trip_id')
+                    ->label('Trip')
+                    ->relationship('trip', 'name'),
 
                 Filter::make('date_range')
                     ->label('Date Range')
@@ -261,7 +318,38 @@ class TransactionResource extends Resource
                             $records->each->update(['category_id' => $data['category_id']]);
 
                             Notification::make()
-                                ->title('Category assigned to ' . $records->count() . ' transaction(s)')
+                                ->title('Category assigned to '.$records->count().' transaction(s)')
+                                ->success()
+                                ->send();
+                        })
+                        ->deselectRecordsAfterCompletion(),
+
+                    BulkAction::make('assignTrip')
+                        ->label('Assign to Trip')
+                        ->icon('heroicon-o-map')
+                        ->form([
+                            Select::make('trip_id')
+                                ->label('Trip')
+                                ->options(fn () => Trip::orderByDesc('start_date')->pluck('name', 'id'))
+                                ->required()
+                                ->searchable(),
+
+                            Toggle::make('split_evenly')
+                                ->label('Split evenly across the group')
+                                ->default(false)
+                                ->helperText('Sets your share to the amount divided by the number of people on the trip.'),
+                        ])
+                        ->action(function (Collection $records, array $data): void {
+                            $trip = Trip::findOrFail($data['trip_id']);
+
+                            $records->each->update(['trip_id' => $trip->id]);
+
+                            if ($data['split_evenly'] ?? false) {
+                                app(TripService::class)->splitEvenly($trip, $records);
+                            }
+
+                            Notification::make()
+                                ->title($records->count()." transaction(s) added to {$trip->name}")
                                 ->success()
                                 ->send();
                         })
@@ -274,7 +362,7 @@ class TransactionResource extends Resource
                         ->modalHeading('Apply Category Rules')
                         ->modalDescription('This will auto-categorize all uncategorized transactions using your defined rules. Manually assigned categories will not be changed.')
                         ->action(function () {
-                            $count = app(\App\Services\CategoryRuleService::class)->applyToAll();
+                            $count = app(CategoryRuleService::class)->applyToAll();
 
                             Notification::make()
                                 ->title($count > 0
@@ -306,7 +394,7 @@ class TransactionResource extends Resource
                             AiCategorizeTransactionsJob::dispatch($ids);
 
                             Notification::make()
-                                ->title('AI categorization queued for ' . count($ids) . ' transaction(s)')
+                                ->title('AI categorization queued for '.count($ids).' transaction(s)')
                                 ->body('You will receive a notification when it completes.')
                                 ->success()
                                 ->send();
@@ -322,9 +410,9 @@ class TransactionResource extends Resource
     public static function getPages(): array
     {
         return [
-            'index'  => Pages\ListTransactions::route('/'),
+            'index' => Pages\ListTransactions::route('/'),
             'create' => Pages\CreateTransaction::route('/create'),
-            'edit'   => Pages\EditTransaction::route('/{record}/edit'),
+            'edit' => Pages\EditTransaction::route('/{record}/edit'),
         ];
     }
 }

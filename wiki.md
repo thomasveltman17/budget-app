@@ -80,11 +80,32 @@ Personal finance and budgeting app. Single-user (one login account, no multi-ten
 | id | bigint | PK |
 | account_id | bigint | FK → accounts (cascadeOnDelete) |
 | category_id | bigint | nullable FK → categories (nullOnDelete) |
-| amount | bigint | cents |
+| trip_id | bigint | nullable FK → trips (nullOnDelete) |
+| amount | bigint | cents — what actually moved through your account |
+| share_amount | bigint | nullable, cents — your personal share of a shared expense |
 | type | enum | income, expense |
 | description | string | |
 | date | date | |
 | is_reviewed | boolean | default false (used in CSV import flow) |
+| is_settlement | boolean | default false — a Tricount/WieBetaaltWat settlement transfer |
+| notes | text | nullable |
+| deleted_at | timestamp | soft deletes |
+
+### `trips`
+| Column | Type | Notes |
+|---|---|---|
+| id | bigint | PK |
+| name | string | |
+| destination | string | nullable |
+| start_date | date | |
+| end_date | date | |
+| budget_amount | bigint | nullable, cents — planned spend |
+| participants | tinyint | default 1, including you — drives "split evenly" |
+| status | enum | planned, active, settling, settled |
+| counts_toward_budget | boolean | default true — false ring-fences the trip from monthly budgets |
+| savings_goal_id | bigint | nullable FK → savings_goals (nullOnDelete) |
+| color | string(7) | hex color, default #F59E0B |
+| icon | string | icon name, default heroicon-o-map |
 | notes | text | nullable |
 | deleted_at | timestamp | soft deletes |
 
@@ -110,7 +131,7 @@ Personal finance and budgeting app. Single-user (one login account, no multi-ten
 | is_completed | boolean | default false |
 | deleted_at | timestamp | soft deletes |
 
-**Soft deletes on:** `accounts`, `categories`, `transactions`, `savings_goals`
+**Soft deletes on:** `accounts`, `categories`, `transactions`, `savings_goals`, `trips`
 **No soft deletes on:** `budgets`
 
 ---
@@ -130,9 +151,16 @@ Personal finance and budgeting app. Single-user (one login account, no multi-ten
 - Helpers: `isParent(): bool`, `isSubcategory(): bool`
 
 ### `App\Models\Transaction`
-- Casts: `amount` → int, `type` → `TransactionType` enum, `date` → date, `is_reviewed` → bool
-- Relations: `account()` BelongsTo, `category()` BelongsTo
-- Scopes: `scopeReviewed()`, `scopeUnreviewed()`, `scopeForPeriod(int $year, int $month)`
+- Casts: `amount` → int, `share_amount` → int, `type` → `TransactionType` enum, `date` → date, `is_reviewed` → bool, `is_settlement` → bool
+- Relations: `account()` BelongsTo, `category()` BelongsTo, `trip()` BelongsTo
+- Scopes: `scopeReviewed()`, `scopeUnreviewed()`, `scopeSettlements()`, `scopeExcludingSettlements()`, `scopeForPeriod(int $year, int $month)`
+- Helpers: `ownShare(): int` (share_amount ?? amount), `frontedAmount(): int` (what you covered for others)
+
+### `App\Models\Trip`
+- Casts: `start_date` / `end_date` → date, `budget_amount` → int, `participants` → int, `status` → `TripStatus` enum, `counts_toward_budget` → bool
+- Relations: `transactions()` HasMany, `savingsGoal()` BelongsTo
+- Scopes: `scopeActive()`, `scopeUnsettled()` (active + settling)
+- Helpers: `durationInDays(): int`, `evenShareOf(int $amount): int`
 
 ### `App\Models\Budget`
 - Casts: `amount` → int, `spent` → int, `period_year` → int, `period_month` → int
@@ -152,10 +180,43 @@ Personal finance and budgeting app. Single-user (one login account, no multi-ten
 | `App\Enums\BudgetingMethod` | `fifty_thirty_twenty`, `seventy_twenty_ten`, `pay_yourself_first`, `custom` |
 | `App\Enums\CategoryType` | `income`, `expense` |
 | `App\Enums\TransactionType` | `income`, `expense` |
+| `App\Enums\TripStatus` | `planned`, `active`, `settling`, `settled` |
 
 ---
 
 ## Services
+
+### `App\Services\TripService`
+
+Money maths for trips. A trip has two totals that answer different questions:
+
+- **out of pocket** — net cash that left your account, settlement transfers included.
+  Exact once the group has settled up, too high before that.
+- **my share** — what you personally consumed, settlements excluded. Correct from
+  day one, and the only total that gives a truthful category breakdown.
+
+The gap between them is the outstanding balance, which lands on zero once the
+Tricount is settled.
+
+```php
+$service->outOfPocket(Trip $trip): int          // net cash out, settlements included
+$service->myShare(Trip $trip): int              // COALESCE(share_amount, amount), settlements excluded
+$service->outstandingBalance(Trip $trip): int   // + group owes you, − you owe the group
+$service->breakdownByCategory(Trip $trip): Collection
+$service->breakdownByDay(Trip $trip): Collection   // every day of the trip, zeroes included
+$service->budgetProgress(Trip $trip): array
+$service->summary(Trip $trip): array               // everything the overview page needs
+$service->autoAssignByDateRange(Trip $trip, ?Carbon $from, ?Carbon $until): int
+$service->splitEvenly(Trip $trip, Collection $transactions): int
+```
+
+**Recording the three cases:**
+
+| Situation | `amount` | `share_amount` | `is_settlement` |
+|---|---|---|---|
+| You paid €120 dinner for four | 12000 | 3000 | false |
+| A friend paid €100, €25 is yours | 0 | 2500 | false |
+| The Tricount payout lands | the transfer | null | true |
 
 ### `App\Services\BudgetPeriodService`
 
